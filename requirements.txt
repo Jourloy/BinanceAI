@@ -1,0 +1,7 @@
+torch
+numpy
+matplotlib
+IPython
+tensorflow
+pandas
+keras
