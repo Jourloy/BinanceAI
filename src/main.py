@@ -5,33 +5,32 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from collections import deque
 import random
+import requests
+import json
+
 
 # Define trading environment
 class TradingEnv:
-    def __init__(self, window_size=10):
-        self.data = np.random.randint(1, 100, size=(100, 2))
+    def __init__(self, window_size=10, steps=100):
         self.window_size = window_size
-        self.startBalance = 1000.0
+        self.steps = steps
         self.reset()
 
     def reset(self):
+        self.data = json.loads(requests.get('http://192.168.50.100:6000/binance/btcusdt').text)
         self.current_step = self.window_size
         self.bought_price = 0
         self.sold_price = 0
-        self.balance = 1000.0
         self.bought = False
-        return self._next_observation()
-
-    def _next_observation(self):
-        return self.data[self.current_step - self.window_size:self.current_step]
+        return self.data
 
     def _take_action(self, action):
-        current_price = self.data[self.current_step][0]
+        current_price = self.data['bookTicker']['a']
 
         reward = 0
 
-        if action == 0 and not self.bought: # Buy
-            
+        if action == 0 and not self.bought:  # Buy
+
             if (self.sold_price > current_price):
                 reward += self.sold_price / current_price
             else:
@@ -40,20 +39,19 @@ class TradingEnv:
             self.bought_price = current_price
             self.bought = True
 
-        elif action == 1 and self.bought: # Sell
+        elif action == 1 and self.bought:  # Sell
 
-            self.balance = self.balance * current_price / self.bought_price
             reward = 0
 
             if (self.bought_price < current_price):
                 reward += self.bought_price / current_price
             else:
                 reward -= self.bought_price / current_price
-                
+
             self.bought = False
             self.sold_price = current_price
 
-        elif action == 2: # Wait
+        elif action == 2:  # Wait
             pass
 
         return reward
@@ -61,8 +59,8 @@ class TradingEnv:
     def step(self, action):
         reward = self._take_action(action)
         self.current_step += 1
-        done = self.current_step == len(self.data)
-        obs = self._next_observation()
+        done = self.current_step == self.steps
+        obs = self.data
         return obs, reward, done, {}
 
 # Define the RL model
@@ -99,7 +97,8 @@ class DQNAgent:
 env = TradingEnv()
 
 # Set hyperparameters
-state_size = env.window_size * env.data.shape[1]
+
+state_size = env.window_size * 4
 action_size = 3
 num_episodes = 100
 
@@ -109,40 +108,45 @@ agent = DQNAgent(state_size, action_size)
 # Set constants
 total_reward = 0
 
-# Initialize agent
-agent = DQNAgent(state_size, action_size)
-
 # Train the model
 for episode in range(num_episodes):
+
     state = env.reset()
-    state = np.reshape(state, [1, state_size])
+
+    state_array = np.array(list(state.values()))
+    state_size = len(state_array)
+    next_state_array = np.reshape(state_array, [1, state_size])
+
     done = False
 
     while not done:
-         if np.random.rand() <= agent.epsilon:
+        if np.random.rand() <= agent.epsilon:
             action = np.random.randint(action_size)
         else:
-            q_values = agent.model.predict(state, verbose=0)
+            q_values = agent.model.predict(next_state_array, verbose=0)
             action = np.argmax(q_values[0])
 
         next_state, reward, done, _ = env.step(action)
-        next_state = np.reshape(next_state, [1, state_size])
+
+        next_state_array = np.array(list(next_state.values()))
+        state_size = len(next_state_array)
+        next_state_array = np.reshape(next_state_array, [1, state_size])
         total_reward += reward
 
         # Store experience in replay memory
-         agent.memory.append((state, action, reward, next_state, done))
+        agent.memory.append((state, action, reward, next_state_array, done))
 
         # Update the state
-        state = next_state
+        state = next_state_array
 
         # Perform experience replay if memory is full
         if len(agent.memory) >= agent.batch_size:
             batch = random.sample(agent.memory, agent.batch_size)
-            for state, action, reward, next_state, done in batch:
+            for state, action, reward, next_state_array, done in batch:
                 if done:
                     target = reward
                 else:
-                    target = reward + agent.gamma * np.amax(agent.model.predict(next_state, verbose=0)[0])
+                    target = reward + agent.gamma * np.amax(agent.model.predict(state, verbose=0)[0])
 
                 target_f = agent.model.predict(state, verbose=0)
                 target_f[0][action] = target
